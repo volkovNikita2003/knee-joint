@@ -5,12 +5,16 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.colors import TABLEAU_COLORS 
 from typing import Tuple, Optional
+from pathlib import Path
 
 class BaseObject():
     def __init__(self):
         pass
     
     def length(self) -> float:
+        """
+            Длина геом.объекта. На основе нее вычисляется шаг сетки по количеству точек в сетке
+        """
         raise NotImplementedError
 
     def plot_plt(ax: Axes) -> None:
@@ -331,26 +335,26 @@ class BaseMeniscusContour(BaseObject):
         super().__init__()
 
 class MeniscusContour1(BaseMeniscusContour):
-    def __init__(self, circ1: Circle, circ2: Circle):
+    def __init__(self, circ_left: Circle, circ_right: Circle):
         super().__init__()
-        self.circ1 = circ1
-        self.circ2 = circ2
+        self.circ1 = circ_left
+        self.circ2 = circ_right
 
         # creating contour
-        tangents = G.external_common_tangents(circ1, circ2)
+        tangents = G.external_common_tangents(circ_left, circ_right)
         assert len(tangents) == 2, f"Error. find {len(tangents)} external common tangents"
 
-        point1_1 = G.tangent_point(circ1, tangents[0])
-        point2_1 = G.tangent_point(circ2, tangents[0])
-        point1_2 = G.tangent_point(circ1, tangents[1])
-        point2_2 = G.tangent_point(circ2, tangents[1])
+        point1_1 = G.tangent_point(circ_left, tangents[0])
+        point2_1 = G.tangent_point(circ_right, tangents[0])
+        point1_2 = G.tangent_point(circ_left, tangents[1])
+        point2_2 = G.tangent_point(circ_right, tangents[1])
 
-        line2 = LineSegment(point1_2, point2_2)
-        arc2 = Arc(circle=circ2, point_start=point2_2, point_end=point2_1)
-        line1 = LineSegment(point2_1, point1_1)
-        arc1 = Arc(circle=circ1, point_start=point1_1, point_end=point1_2)
+        line_bottom = LineSegment(point1_2, point2_2)
+        arc_right = Arc(circle=circ_right, point_start=point2_2, point_end=point2_1)
+        line_top = LineSegment(point2_1, point1_1)
+        arc_left = Arc(circle=circ_left, point_start=point1_1, point_end=point1_2)
         
-        self.objs: list[BaseObject] = [line2, arc2, line1, arc1]
+        self.objs: list[BaseObject] = [line_bottom, arc_right, line_top, arc_left]
         self.l = 0.0
         for obj in self.objs:
             self.l += obj.length()
@@ -362,6 +366,73 @@ class MeniscusContour1(BaseMeniscusContour):
     def length(self) -> float:
         return self.l
 
+# TODO: подумать над названием
+# Этот клас нужен, чтобы сетка меника была наследником BaseGrid. 
+# Можно обойтись без этого класса, если BaseGrid переписать под лист объектов.
+# С другой стороны, класс BaseGrid довольно логичный и для сохранения его чистоты 
+# нужно ввести этот класс для сетки мениска
+class MeniscusGeom1(BaseObject):
+    """
+        Описывает весь мениск как совокупность контуров
+    """
+    def __init__(
+        self,
+        width: float,
+        h: float,
+        circle_left: Circle,
+        circle_right: Circle
+    ):
+        """
+            TODO: подумать о том, как описывать мениск
+            width - ширина
+            h - расстояние между контурами
+            circle_left - левый круг, задающий внешний контур
+            circle_right - правый круг, задающий внешний контур
+        """
+        assert width > h, ValueError("width must be greater than h")
+        assert circle_left.get_center().get_coords()[0] < circle_right.get_center().get_coords()[0], ValueError("circle _left must be to the left of the circle_right")
+        assert circle_left.get_r() > width, ValueError("radius of the circle_left must be greater than width")
+        assert circle_right.get_r() > width, ValueError("radius of the circle_right must be greater than width")        
+
+        self.width = width
+        self.h = h
+        self.circle_left_out = circle_left
+        self.circle_right_out = circle_right
+
+        center_left = self.circle_left_out.get_center()
+        center_right = self.circle_right_out.get_center()
+        r_left_out = self.circle_left_out.get_r()
+        r_right_out = self.circle_right_out.get_r() 
+        r_left_inner = r_left_out - self.width
+        r_right_inner = r_right_out - self.width
+
+        self.contours: list[MeniscusContour1] = []
+        for dr in np.arange(0.0, self.width + self.h, self.h, dtype=np.float64):
+            r_left = r_left_inner + dr
+            r_right = r_right_inner + dr
+            circ_left = Circle(center_left, r_left)
+            circ_right = Circle(center_right, r_right)
+            c = MeniscusContour1(circ_left, circ_right)
+            self.contours.append(c)
+
+        # culc length
+        # длина среднего контура, чотбы сетка была "ровнее"
+        r_left_middle = (r_left_inner + r_left_out) / 2
+        r_right_middle = (r_right_inner + r_right_out) / 2
+        circ_left_middle = Circle(center_left, r_left_middle)
+        circ_right_middle = Circle(center_right, r_right_middle)
+        c_middle = MeniscusContour1(circ_left_middle, circ_right_middle)
+        self.length_contour_middle = c_middle.length()
+
+    def plot_plt(self, ax: Axes, **kwargs):
+        for obj in self.contours:
+            obj.plot_plt(ax, **kwargs)
+
+    def length(self) -> float:
+        """
+            Эффективная длина. Нужна для вычисления шага сетки при известном количестве узлов в контуре
+        """
+        return self.length_contour_middle
 
 class BaseGrid():
     def __init__(
@@ -402,6 +473,14 @@ class BaseGrid():
         if not self.is_made:
             self._make()
         return self.grid
+
+    def get_grid_xy(self) -> Tuple[NDArray[Shape["*"], Float64], NDArray[Shape["*"], Float64]]:
+        if not self.is_made:
+            self._make()
+        x = self.grid[:, 0]
+        y = self.grid[:, 1]
+        # print(x.shape, x[:3])
+        return x, y
     
     def _culc_h(self):
         if all_is_not_None([self.size, self.length]):
@@ -422,6 +501,30 @@ class BaseGrid():
         x = self.grid[:, 0]
         y = self.grid[:, 1]
         ax.plot(x, y, **kwargs)
+    
+    def save_bin(self, dir: Path, filename_prefix: str) -> Tuple[Path, Path]:
+        """
+            Сохранение сетки в бинарники
+            filename_prefix - префикс имени файла, будет добавлена ось и расширение
+            dir - директория сохранения файлов
+
+            Возвращает пути сохраенных файлов
+        """
+        if dir.exists():
+            if not dir.is_dir():
+                ValueError(f"'{dir}' существует, но не является директорией")
+        else:
+            dir.mkdir(parents=True)
+        filename_template = f"{filename_prefix}_{{}}.bin"
+        filename_x = filename_template.format('x')
+        filename_y = filename_template.format('y')
+        path_x = dir / filename_x
+        path_y = dir / filename_y
+        x, y = self.get_grid_xy()
+        x.astype('f').tofile(path_x)
+        y.astype('f').tofile(path_y)
+        return path_x, path_y
+        
 
 # словарь соответствия геом.объектов и их сеток
 grid_map: dict[type[BaseObject], type[BaseGrid]] = {}
@@ -436,6 +539,8 @@ class GridLineSegment(BaseGrid):
         super().__init__(line_segment, size, h)
 
     def _make(self):
+        if self.is_made:
+            return
         if not isinstance(self.obj, LineSegment):
             raise ValueError("self.obj must be LineSegment") 
         point1, point2 = self.obj.get_points()
@@ -471,6 +576,8 @@ class GridArc(BaseGrid):
         self.include_end_point = include_end_point
     
     def _make(self) -> None:
+        if self.is_made:
+            return
         if not isinstance(self.obj, Arc):
             raise ValueError("self.obj must be Arc") 
         phi1 = self.obj.phi1
@@ -498,11 +605,13 @@ class GridMeniscusContour(BaseGrid):
         self,
         contour: BaseMeniscusContour,
         # size: Optional[int] = None,
-        h: Optional[float] = None,
+        h: float
     ) -> None:
         super().__init__(contour, h=h)
     
     def _make(self) -> None:
+        if self.is_made:
+            return
         if not isinstance(self.obj, BaseMeniscusContour):
             raise ValueError("self.obj must be BaseMeniscusContour or his children class")
         x = []
@@ -517,8 +626,39 @@ class GridMeniscusContour(BaseGrid):
         y = np.array(y).reshape(-1, 1)
         self.grid = np.hstack((x, y))
         self.is_made = True
-grid_map[BaseMeniscusContour] = GridMeniscusContour
-    
+grid_map[MeniscusContour1] = GridMeniscusContour
+
+class GridMeniscus1(BaseGrid):
+    def __init__(
+        self,
+        width: float,
+        h: float,
+        circle_left: Circle,
+        circle_right: Circle
+    ):
+        """
+            Сетка мениска с контуром №1
+        """
+        obj: MeniscusGeom1 = MeniscusGeom1(width, h, circle_left, circle_right)
+        super().__init__(obj, h=h)   
+
+    def _make(self) -> None:
+        if self.is_made:
+            return
+        if not isinstance(self.obj, MeniscusGeom1):
+            raise ValueError("self.obj must be MeniscusGeom1")
+        x = []
+        y = []
+        for contours in self.obj.contours:
+            Grid_obj = grid_map[type(contours)](contours, h=self.h)
+            xy = Grid_obj.get_grid()
+            x += list(xy[:, 0])
+            y += list(xy[:, 1])
+
+        x = np.array(x).reshape(-1, 1)
+        y = np.array(y).reshape(-1, 1)
+        self.grid = np.hstack((x, y))
+        self.is_made = True 
 
 if __name__ == "__main__":
     width = 0.05
@@ -529,117 +669,20 @@ if __name__ == "__main__":
 
     r1_out = 0.1
     c1 = Point(0, r1_out)
-    # circ1 = Circle(c1, r1_out)
+    circ1 = Circle(c1, r1_out)
 
     r2_out = 0.4
     c2 = Point(1, r2_out)
-    # circ2 = Circle(c2, r2_out)
+    circ2 = Circle(c2, r2_out)
 
-    fig, ax = plt.subplots()
-    plot_params = {
-        "marker": 'o',
-        "color": colors[0]
-    }
+    meniscus_grid = GridMeniscus1(width, h, circ1, circ2)
+    path_x, path_y = meniscus_grid.save_bin(Path("./grids"), "meniscus")
 
-    # # Рисуем окружность
-    # circ1.plot_plt(plt, ax)
-    # circ2.plot_plt(plt, ax)
+    # fig, ax = plt.subplots()
+    # plot_params = {
+    #     "marker": 'o',
+    #     "color": colors[0]
+    # }
+    # meniscus_grid.plot_plt(ax, **plot_params)
 
-    # tangents = external_common_tangents(circ1, circ2)
-    # # print(tangents)
-    # x = np.linspace(-1, 2, 2)
-    # for tangent in tangents:
-    #     y = tangent.culc_y(x)
-    #     # print(y)
-    #     plt.plot(x, y)
-
-    x = []
-    y = []
-    for ind, dr in enumerate(np.arange(0.0, width + h, h, dtype=np.float64)):
-        plot_params['color'] = colors[ind]
-
-        r1 = r1_out - dr
-        r2 = r2_out - dr
-        circ1 = Circle(c1, r1)
-        circ2 = Circle(c2, r2)
-
-        contour = MeniscusContour1(circ1, circ2)
-        # contour.plot_plt(ax, **plot_params)
-        grid_contour = GridMeniscusContour(contour, h=h)
-        # grid_contour.plot_plt(ax, **plot_params)
-        xy_grid = grid_contour.get_grid()
-        x += list(xy_grid[:, 0])
-        y += list(xy_grid[:, 1])
-
-        # tangents = G.external_common_tangents(circ1, circ2)
-        # assert len(tangents) == 2, "Error"
-
-        # point1_1 = G.tangent_point(circ1, tangents[0])
-        # point2_1 = G.tangent_point(circ2, tangents[0])
-        # point1_2 = G.tangent_point(circ1, tangents[1])
-        # point2_2 = G.tangent_point(circ2, tangents[1])
-
-        # # print(point1_1)
-
-        # # circ1.plot_plt(plt, ax)
-        # # point1_1.plot_plt(ax)
-        # # point1_2.plot_plt(ax)
-
-        # line2 = LineSegment(point1_2, point2_2)
-        # # line2.plot_plt(ax)
-        # grid_line2 = GridLineSegment(line2, h=h)
-        # # grid_line2.plot_plt(ax, **plot_params)
-        # x += list(grid_line2.get_grid()[:, 0])
-        # y += list(grid_line2.get_grid()[:, 1])
-
-        # arc2 = Arc(circle=circ2, point_start=point2_2, point_end=point2_1)
-        # # arc2.plot_plt(ax)
-        # grid_arc2 = GridArc(arc2, 10)
-        # # grid_arc2.plot_plt(ax, **plot_params)
-        # x += list(grid_arc2.get_grid()[:, 0])
-        # y += list(grid_arc2.get_grid()[:, 1])
-
-        # line1 = LineSegment(point2_1, point1_1)
-        # # line1.plot_plt(ax)
-        # grid_line1 = GridLineSegment(line1, h=h)
-        # # grid_line1.plot_plt(ax, **plot_params)
-        # x += list(grid_line1.get_grid()[:, 0])
-        # y += list(grid_line1.get_grid()[:, 1])
-
-        # arc1 = Arc(circle=circ1, point_start=point1_1, point_end=point1_2)
-        # # arc1.plot_plt(ax)
-        # grid_arc1 = GridArc(arc1, 10)
-        # # grid_arc1.plot_plt(ax, **plot_params)
-        # x += list(grid_arc1.get_grid()[:, 0])
-        # y += list(grid_arc1.get_grid()[:, 1])
-
-        
-
-        
-        # Рисуем окружность
-        # circ1.plot_plt(plt, ax)
-        # circ2.plot_plt(plt, ax)
-
-        # касательные и точки касания
-        # for tangent in tangents:
-        #     # точки касания
-        #     point1 = G.tangent_point(circ1, tangent)
-        #     point2 = G.tangent_point(circ2, tangent)
-
-        #     # arc = Arc(center=)
-
-        #     x = [point1.x, point2.x]
-        #     y = [point1.y, point2.y]
-        #     ax.plot(x, y, marker='o', color=colors[ind])
-
-        # break
-    plot_params['color'] = colors[0]
-    ax.plot(x, y, **plot_params)
-
-    ax.set_xlim(-0.11, 1.41)
-    ax.set_ylim(-0.01, 0.81)
-    # ax.set_xlim(-2, 8)
-    # ax.set_ylim(-3, 5)
-    ax.set_aspect('equal')
-
-    plt.show()
+    # plt.show()
